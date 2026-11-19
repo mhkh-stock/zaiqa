@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE TABLE IF NOT EXISTS vendors (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  manager_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  manager_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
   slug TEXT NOT NULL UNIQUE,
   category TEXT NOT NULL,
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   manager_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   vendor_id INTEGER REFERENCES vendors(id) ON DELETE SET NULL,
-  plan TEXT NOT NULL CHECK (plan IN ('Basic','Premium','Featured')),
+  plan TEXT NOT NULL,
   amount_pkr INTEGER NOT NULL,
   method TEXT NOT NULL CHECK (method IN ('Bank Transfer','Easypaisa','JazzCash','Sadapay','Nayapay','Manual Reference')),
   reference_text TEXT,
@@ -227,3 +227,18 @@ CREATE INDEX IF NOT EXISTS idx_hours_vendor ON vendor_hours(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_reports_vendor ON listing_reports(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_reports_status ON listing_reports(status);
 CREATE INDEX IF NOT EXISTS idx_saved_user ON saved_vendors(user_id);
+
+-- Subscription plans are published by the Portal Admin from the admin
+-- panel. Only published plans appear in the public /api/plans list and can
+-- be bought. Unpublished plans stay visible to the admin and keep working
+-- for payments already submitted for them. Plan names are free-form text —
+-- the payments table deliberately has NO CHECK on plan names, so an admin
+-- can add any plan without a schema change.
+CREATE TABLE IF NOT EXISTS plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  days INTEGER NOT NULL CHECK (days >= 1),
+  price_pkr INTEGER NOT NULL CHECK (price_pkr >= 0),
+  published INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
