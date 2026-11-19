@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zaiqa — Taste Pakistan</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%232e7d32'/%3E%3Ctext x='50' y='72' font-size='58' font-family='Arial' font-weight='bold' text-anchor='middle' fill='white'%3EZ%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="app-header">
+  <div class="header-inner">
+    <div class="header-left">
+      <div class="avatar" id="avatarBox">Z</div>
+      <div class="deliver-to">
+        <span class="deliver-label">Deliver to</span>
+        <button class="deliver-city" id="deliverCityBtn" type="button">
+          <span id="deliverCityText">All Pakistan</span> <span class="chev">▾</span>
+        </button>
+        <div class="city-menu" id="cityMenu" hidden></div>
+      </div>
+    </div>
+    <div class="header-right">
+      <button class="bell-btn" id="bellBtn" type="button" title="Account" aria-label="Account">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        <span class="bell-dot" id="bellDot" hidden></span>
+      </button>
+    </div>
+  </div>
+  <div class="search-wrap">
+    <div class="search-pill">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="topSearch" placeholder="Search restaurants or dishes" aria-label="Search restaurants or dishes">
+      <button class="search-go" type="button" onclick="applyFilters()">Search</button>
+    </div>
+  </div>
+</header>
+
+<section class="hero" id="homeHero" hidden>
+  <div class="hero-inner">
+    <div class="hero-text">
+      <h1>GOOD FOOD,<br><span class="hero-accent">NEAR YOU.</span></h1>
+      <p>Approved restaurants, karahi houses, BBQ spots and sweet shops — across Pakistan. Prices in PKR.</p>
+      <button class="cta-orange" type="button" onclick="scrollToVendors()">BROWSE VENDORS</button>
+    </div>
+    <div class="hero-art" aria-hidden="true">
+      <svg viewBox="0 0 320 190" width="100%" height="100%">
+        <ellipse cx="160" cy="168" rx="130" ry="12" fill="#cfe8c6"/>
+        <circle cx="72" cy="140" r="26" fill="#2e7d32"/>
+        <circle cx="72" cy="140" r="12" fill="#e8f5e9"/>
+        <circle cx="248" cy="140" r="26" fill="#2e7d32"/>
+        <circle cx="248" cy="140" r="12" fill="#e8f5e9"/>
+        <path d="M72 140 L120 96 L180 96 L210 140" fill="none" stroke="#43a047" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M120 96 L150 60 L205 60" fill="none" stroke="#43a047" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="196" y="52" width="34" height="12" rx="6" fill="#1b5e20"/>
+        <rect x="238" y="128" width="46" height="24" rx="8" fill="#ff5722"/>
+        <circle cx="150" cy="42" r="14" fill="#ffcc80"/>
+        <path d="M138 34 q12 -14 26 0 l-4 10 h-18 z" fill="#2e7d32"/>
+        <path d="M140 58 q10 -8 22 0 l6 22 q-16 8 -32 0 z" fill="#ff5722"/>
+        <path d="M158 78 L176 96" stroke="#ffcc80" stroke-width="8" stroke-linecap="round"/>
+        <path d="M146 76 L128 92" stroke="#ffcc80" stroke-width="8" stroke-linecap="round"/>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<div class="layout">
+  <main class="main" id="app"><p class="muted">Loading Zaiqa…</p></main>
+</div>
+
+<footer class="footer">
+  <a href="#/about">About</a>
+  <a href="#/contact">Contact</a>
+  <a href="#/privacy">Privacy</a>
+  <a href="#/terms">Terms</a>
+  <span class="muted">Zaiqa lists approved food businesses across Pakistan. Prices in PKR.</span>
+</footer>
+
+<div class="float-order" id="floatOrder" hidden></div>
+
+<nav class="bottomnav" aria-label="Bottom navigation">
+  <a href="#/" data-bnav="home"><span class="bnav-ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></span><span>Home</span></a>
+  <a href="#/saved" data-bnav="saved"><span class="bnav-ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></span><span>Saved</span></a>
+  <a href="#/offers" data-bnav="offers"><span class="bnav-ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg></span><span>Offers</span></a>
+  <a href="#/manager" data-bnav="manager"><span class="bnav-ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9M3 9v11a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9M3 9h18M9 21v-6h6v6"/></svg></span><span>Manager</span></a>
+  <a href="#/account" data-bnav="profile"><span class="bnav-ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span><span>Profile</span></a>
+</nav>
+
+<script src="/app.js"></script>
+</body>
+</html>
