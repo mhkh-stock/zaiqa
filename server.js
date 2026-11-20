@@ -274,23 +274,61 @@ function rateLimit(ip, key, max, windowMs) {
 }
 const loginOtpStore = new Map(); // login_token -> {userId, codeHash, expiresAt}
 
-// ---------- real email OTP (zero-dependency SMTP, Gmail app password) ----------
-// SMTP_USER / SMTP_PASS are set in the host env (Railway Variables on live).
-// The app password is a 16-char Gmail app password — it is never written to
-// any file, log, chat or API response; it only travels inside the SMTP AUTH.
+// ---------- real email OTP (Brevo HTTPS API first, SMTP fallback) ----------
+// Brevo is the live mail road: Railway blocks outbound SMTP (ETIMEDOUT on
+// 465 + 587, verified 2026-11-20), so the Gmail app-password SMTP path can
+// never send from Railway. Brevo's API is plain HTTPS (port 443), free
+// 300 emails/day, no card, no domain — the sender is one verified Gmail
+// address (a confirmation link clicked in that inbox). Env vars are set in
+// the host env (Railway Variables on live). The API key is never written to
+// any file, log, chat or API response; it only travels in the HTTPS header.
+// SMTP stays as a fallback for hosts where it works. BREVO_API_URL is
+// overridable so the test suite can point it at a local stub.
+const BREVO_API_KEY = (process.env.BREVO_API_KEY || '').trim();
+const BREVO_SENDER_EMAIL = (process.env.BREVO_SENDER_EMAIL || 'mhkh3200@gmail.com').trim();
+const BREVO_SENDER_NAME = (process.env.BREVO_SENDER_NAME || 'Zaiqa').trim();
+const BREVO_API_URL = (process.env.BREVO_API_URL || 'https://api.brevo.com/v3/smtp/email').trim();
 const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
 const SMTP_USER = (process.env.SMTP_USER || '').trim();
 const SMTP_PASS = process.env.SMTP_PASS || '';
 const SMTP_FROM = (process.env.SMTP_FROM || SMTP_USER || 'Zaiqa <noreply@zaiqa.app>').trim();
 const SITE_URL = (process.env.PUBLIC_URL || 'https://zaiqa-production.up.railway.app').replace(/\/$/, '');
+function brevoConfigured() { return BREVO_API_KEY !== ''; }
 function smtpConfigured() { return SMTP_USER !== '' && SMTP_PASS !== ''; }
+function emailConfigured() { return brevoConfigured() || smtpConfigured(); }
+
+// Send one email through the Brevo transactional API (HTTPS, zero deps —
+// the global fetch on Node 24). 201 = accepted. Any other status is an API
+// rejection (401 bad key, 403 sender not verified, 429 daily cap) — the
+// reason carries only the status + Brevo's error code, never the key.
+async function sendViaBrevo(to, subject, text) {
+  try {
+    const res = await fetch(BREVO_API_URL, {
+      method: 'POST',
+      headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        sender: { name: BREVO_SENDER_NAME, email: BREVO_SENDER_EMAIL },
+        to: [{ email: to }],
+        subject: String(subject).replace(/[\r\n]/g, ' '),
+        textContent: String(text),
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.status === 201 || res.status === 200) return { sent: true, reason: 'sent' };
+    let code = '';
+    try { const j = await res.json(); if (j && j.code) code = ':' + String(j.code); } catch {}
+    return { sent: false, reason: 'brevo_' + res.status + code };
+  } catch (err) {
+    return { sent: false, reason: 'brevo_error:' + (err && err.code ? err.code : 'unknown') };
+  }
+}
 
 // Minimal SMTP client over implicit TLS (port 465): EHLO, AUTH LOGIN,
 // MAIL FROM, RCPT TO, DATA, QUIT. No dependencies, no raw secrets logged.
 function sendMail(to, subject, text) {
   return new Promise((resolve) => {
-    if (!smtpConfigured()) return resolve({ sent: false, reason: 'not_configured' });
+    if (!emailConfigured()) return resolve({ sent: false, reason: 'not_configured' });
     let done = false, active = null;
     const finish = (ok, reason) => {
       if (done) return; done = true; clearTimeout(timer);
@@ -381,17 +419,28 @@ function sendMail(to, subject, text) {
       return converse(upgraded, 'socket_error');
     };
     (async () => {
+      // Brevo first when configured: HTTPS reaches Railway's egress where
+      // SMTP cannot (465/587 time out there). A Brevo failure falls through
+      // to SMTP when it is configured; the log line keeps both reasons.
+      let brevoReason = null;
+      if (brevoConfigured()) {
+        const rb = await sendViaBrevo(to, subject, text);
+        if (rb.sent) return finish(true, 'sent');
+        brevoReason = rb.reason;
+        if (!smtpConfigured()) return finish(false, brevoReason);
+      }
       const r1 = await tryImplicitTLS();
       if (r1.sent) return finish(true, 'sent');
       // Fall back to 587 only when the 465 socket itself failed (port
       // unreachable/blocked) — not when the server answered or the
       // credentials were rejected. Only the default 465 port gets a fallback.
+      const prefix = brevoReason ? brevoReason + ' + smtp ' : '';
       if (SMTP_PORT === 465 && r1.reason && r1.reason.startsWith('socket_error')) {
         const r2 = await tryStartTLS();
         if (r2.sent) return finish(true, 'sent');
-        return finish(false, r1.reason + ' + 587:' + r2.reason);
+        return finish(false, prefix + r1.reason + ' + 587:' + r2.reason);
       }
-      return finish(false, r1.reason);
+      return finish(false, prefix + r1.reason);
     })();
   });
 }
@@ -415,10 +464,11 @@ function noteWrongAttempt(identifier) {
 function clearAttempts(identifier) { codeAttempts.delete(identifier); }
 
 // Send a 6-digit code to the user's Gmail. Returns the channel used.
-//  - 'email': the code was sent by SMTP (code is NOT in the API response)
-//  - 'dev':   no SMTP configured + local development — code IS in the response
-//  - 'none':  no SMTP + production — the code cannot be delivered anywhere
-//  - 'failed': SMTP configured but the send failed
+//  - 'email': the code was sent by email, Brevo API or SMTP (code is NOT in
+//             the API response)
+//  - 'dev':   no email configured + local development — code IS in the response
+//  - 'none':  no email + production — the code cannot be delivered anywhere
+//  - 'failed': email configured but the send failed
 //  - 'limited': too many codes to this email in the last hour
 async function deliverCode(user, code, purpose) {
   const email = user.email;
@@ -440,7 +490,7 @@ async function deliverCode(user, code, purpose) {
     login: `Your Zaiqa login code is: ${code}\n\nIt expires in 15 minutes. Enter it on the Zaiqa login page to reach your dashboard.\n\nIf you did not ask for this code, ignore this email — your password was not changed.\n\n— Zaiqa (Taste Pakistan)`,
     'manager-setup': `You have been added as a manager on Zaiqa.\n\nYour setup code is: ${code}\n\nIt expires in 15 minutes. Open ${SITE_URL}/#/register and use the "Manager setup" form with this code and your new password to activate your manager account.\n\nIf you did not expect this, ignore this email.\n\n— Zaiqa (Taste Pakistan)`,
   };
-  if (smtpConfigured()) {
+  if (emailConfigured()) {
     const r = await sendMail(email, subjects[purpose] || subjects.verify, bodies[purpose] || bodies.verify);
     if (r.sent) { console.log(`OTP email sent (${purpose}) to ${email}`); return { channel: 'email' }; }
     console.log(`OTP email FAILED (${purpose}) to ${email}: ${r.reason}`);
@@ -453,7 +503,7 @@ async function deliverCode(user, code, purpose) {
 // Map a deliverCode channel to the HTTP error a caller must send, or null
 // when the caller may proceed (channel 'email' or 'dev').
 function channelError(channel) {
-  if (channel === 'none') return { status: 503, error: 'Email is not configured on this server. The Portal Admin must connect email (SMTP) before accounts can be verified.' };
+  if (channel === 'none') return { status: 503, error: 'Email is not configured on this server. The Portal Admin must connect email (Brevo API key) before accounts can be verified.' };
   if (channel === 'failed') return { status: 503, error: 'The verification email could not be sent. Please try again in a few minutes.' };
   if (channel === 'limited') return { status: 429, error: 'Too many codes sent to this email in the last hour. Please try again later.' };
   return null;

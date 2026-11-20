@@ -44,7 +44,7 @@ rate limits + audit logging. Test suite: **242/242 pass** (`node test.js`).
   `zaiqa.sqlite`, cookies `zq_session`/`zq_csrf`, service name
   `zaiqa`, and the public vendor response now also carries
   `approved_at`, `subscription_expires_at`, `created_at` (used by the vendor
-  timeline). The backend also adds the real-security rebuild on top of FoodScope v1: SMTP email OTP on register and every login, admin-created manager accounts, admin-published subscription plans, listing reports, saved vendors, opening hours with live open-now, halal/certificate badges, and per-vendor payment methods.
+  timeline). The backend also adds the real-security rebuild on top of FoodScope v1: email OTP (Brevo API, SMTP fallback) on register and every login, admin-created manager accounts, admin-published subscription plans, listing reports, saved vendors, opening hours with live open-now, halal/certificate badges, and per-vendor payment methods.
 
 ## Stack
 Node.js 24+, native `node:http` + `node:sqlite` only — no external
@@ -99,15 +99,29 @@ Burns Road, Lahore, Islamabad + 2 pending, correctly hidden publicly) seed
 ## Real security — email OTP (no on-screen codes on live)
 - **Codes go to Gmail, never to the screen.** Verification codes (register)
   and login codes (every login, every role — customer, manager, staff,
-  owner) are sent by SMTP to the user's own Gmail. The code is never
+  owner) are sent by email to the user's own Gmail. The code is never
   returned in an API response once email is configured.
-- **SMTP:** zero-dependency client in `server.js` (`node:tls` to
-  `smtp.gmail.com:465`, AUTH LOGIN; if port 465 is unreachable it falls back
-  to STARTTLS on 587, and the failure log carries the socket error code,
-  e.g. `socket_error:ECONNREFUSED`). Set `SMTP_USER` (Gmail address) +
-  `SMTP_PASS` (16-char Gmail app password) in Railway → service →
-  Variables. The app password is never written to any file, log, chat or
-  API response. Optional: `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `PUBLIC_URL`.
+- **Brevo (live mail road):** the code sends through the Brevo transactional
+  API — one HTTPS call to `api.brevo.com/v3/smtp/email` (zero deps, global
+  `fetch`). Free 300 emails/day, no card, no domain needed: the sender is
+  one verified Gmail address (`BREVO_SENDER_EMAIL`, default
+  `mhkh3200@gmail.com` — verify it in Brevo by clicking the confirmation
+  link Brevo emails to that inbox). Set `BREVO_API_KEY` (key starts
+  `xkeysib-`) + `BREVO_SENDER_EMAIL` in Railway → service → Variables.
+  The key is never written to any file, log, chat or API response.
+  Optional: `BREVO_SENDER_NAME`, `BREVO_API_URL` (test hook only).
+  Why Brevo and not Gmail SMTP: Railway blocks outbound SMTP at the
+  network level (ETIMEDOUT on 465 + 587, verified live 2026-11-20), so
+  direct Gmail SMTP can never send from Railway. Resend was checked first
+  and rejected: its free test address can only send to the account's own
+  email, so customer OTPs would never arrive.
+- **SMTP fallback:** the zero-dependency client in `server.js` (`node:tls`
+  to `smtp.gmail.com:465`, AUTH LOGIN; if port 465 is unreachable it falls
+  back to STARTTLS on 587, and the failure log carries the socket error
+  code, e.g. `socket_error:ECONNREFUSED`) still runs when Brevo fails and
+  `SMTP_USER` + `SMTP_PASS` (16-char Gmail app password) are set — for
+  hosts where SMTP works. On Railway it is dead by design; Brevo is the
+  live path. Optional: `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `PUBLIC_URL`.
 - **Fail-closed:** if email is not configured on a production server,
   register / request-code / login return **503 "Email is not configured"**
   and no unverifiable account is created. If the send itself fails, the
@@ -127,6 +141,8 @@ Burns Road, Lahore, Islamabad + 2 pending, correctly hidden publicly) seed
   creates/edits/publishes plans from the Admin panel. A vendor stays public
   only while its subscription is current.
 - **Known limit:** the dev VM's egress proxy blocks direct TLS on ports
-  465/587, so SMTP delivery cannot be tested from this machine — verify
-  delivery on Railway after setting `SMTP_USER`/`SMTP_PASS` (register a
-  fresh customer and check the Gmail inbox).
+  465/587, so SMTP delivery cannot be tested from this machine — the
+  Brevo channel is proven instead by the test suite's stub-Brevo boot
+  (17 checks: 401 fails closed, 201 sends, the emailed code verifies).
+  Verify real delivery on Railway after setting `BREVO_API_KEY` (register
+  a fresh customer and check the Gmail inbox).

@@ -3,15 +3,19 @@
 // The suite copies server.js + public/ + sql/ into a temp dir so the real
 // ~/workspace/zaiqa/app/zaiqa.sqlite is NEVER touched. All accounts use
 // dummy credentials only. No GitHub, no live container.
-// The suite runs in NODE_ENV=development with NO SMTP configured, so the
+// The suite runs in NODE_ENV=development with NO email configured, so the
 // dev channel returns codes in responses (dev_code). A second boot at the
-// end runs in production mode with no SMTP to prove the fail-closed
+// end runs in production mode with no email to prove the fail-closed
 // behaviour: no code is ever returned and no unverifiable account is made.
+// A third boot runs in production with a stub Brevo API (local HTTP server)
+// to prove the real email channel end to end: register + login OTP arrive
+// as Brevo requests and the code in the email verifies the account.
 'use strict';
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const http = require('node:http');
 const { spawn } = require('node:child_process');
 
 const PORT = 3019;
@@ -98,6 +102,7 @@ async function main() {
     await waitForHealth();
     await runTests();
     await prodNoSmtpChecks();
+    await prodBrevoChecks();
   } finally {
     child.kill('SIGTERM');
     await new Promise((r) => child.on('exit', r));
@@ -153,6 +158,84 @@ async function prodNoSmtpChecks() {
   } finally {
     child.kill('SIGTERM');
     await new Promise((r) => child.on('exit', r));
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+// Production boot with a stub Brevo API: the real email channel, end to end.
+// The stub first rejects (401) to prove a Brevo failure fails closed, then
+// accepts (201) and the code captured from the stubbed email must verify.
+const BREVO_PORT = 3021;
+const BREVO_STUB = 'http://127.0.0.1:' + BREVO_PORT;
+const BREVO_PROD_PORT = 3022;
+const BREVO_PROD_BASE = 'http://127.0.0.1:' + BREVO_PROD_PORT;
+async function prodBrevoChecks() {
+  console.log('\n== production, stub Brevo API: real email channel ==');
+  const seen = []; // captured Brevo request bodies
+  let failMode = true; // start rejecting, then accept
+  const stub = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      let json = null;
+      try { json = JSON.parse(body); } catch {}
+      seen.push({ headers: req.headers, json });
+      if (failMode) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ code: 'unauthorized', message: 'Key not found' })); }
+      else { res.writeHead(201, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ messageId: 'stub-' + seen.length })); }
+    });
+  });
+  await new Promise((r) => stub.listen(BREVO_PORT, '127.0.0.1', r));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zaiqa-brevo-test-'));
+  for (const f of ['server.js', 'package.json']) fs.copyFileSync(path.join(ROOT, f), path.join(tmp, f));
+  fs.cpSync(path.join(ROOT, 'public'), path.join(tmp, 'public'), { recursive: true });
+  fs.cpSync(path.join(ROOT, 'sql'), path.join(tmp, 'sql'), { recursive: true });
+  const child = spawn('node', ['server.js'], {
+    cwd: tmp, env: { ...process.env, PORT: String(BREVO_PROD_PORT), NODE_ENV: 'production', ADMIN_EMAIL: 'brevoadmin@example.com', ADMIN_PASSWORD: 'BrevoAdmin1!', BREVO_API_KEY: 'xkeysib-test-key', BREVO_SENDER_EMAIL: 'zaiqa@example.com', BREVO_API_URL: BREVO_STUB + '/v3/smtp/email' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    for (let i = 0; i < 50; i++) {
+      try { const rr = await fetch(BREVO_PROD_BASE + '/api/health'); if (rr.status === 200) break; } catch {}
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const post = async (p, body) => {
+      const res = await fetch(BREVO_PROD_BASE + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      return { status: res.status, json: await res.json().catch(() => ({})) };
+    };
+    // Brevo rejecting (bad key): register fails closed, no account made.
+    let r = await post('/api/auth/register-customer', { name: 'Brevo User', email: 'brevo@example.com', password: 'DummyPass1!' });
+    eq('brevo 401 register = 503', r.status, 503);
+    ok('brevo 401 response has no code', !r.json.dev_code);
+    eq('brevo 401 sent one request to stub', seen.length, 1);
+    ok('brevo request used the verified sender', seen[0].json && seen[0].json.sender && seen[0].json.sender.email === 'zaiqa@example.com', JSON.stringify(seen[0] && seen[0].json && seen[0].json.sender));
+    ok('brevo request targeted the customer', seen[0].json && seen[0].json.to && seen[0].json.to[0] && seen[0].json.to[0].email === 'brevo@example.com', JSON.stringify(seen[0] && seen[0].json && seen[0].json.to));
+    r = await post('/api/auth/login', { identifier: 'brevo@example.com', password: 'DummyPass1!' });
+    eq('brevo 401 unregistered email login = 401 (no account made)', r.status, 401);
+    // Brevo accepting: register succeeds, code lives only in the email.
+    failMode = false;
+    r = await post('/api/auth/register-customer', { name: 'Brevo User', email: 'brevo@example.com', password: 'DummyPass1!' });
+    eq('brevo 201 register = 201', r.status, 201);
+    ok('brevo 201 response has no code', !r.json.dev_code);
+    eq('brevo 201 channel = email', r.json.channel, 'email');
+    eq('brevo 201 sent a second request', seen.length, 2);
+    const mail = seen[1].json;
+    const m = mail && mail.textContent && mail.textContent.match(/(\d{6})/);
+    ok('brevo email carries a 6-digit code', !!m, mail && mail.textContent);
+    r = await post('/api/auth/verify', { identifier: 'brevo@example.com', code: m[1] });
+    eq('brevo code from the email verifies the account', r.status, 200);
+    // Admin login OTP through Brevo, then login-verify with the emailed code.
+    r = await post('/api/auth/login', { identifier: 'brevoadmin@example.com', password: 'BrevoAdmin1!' });
+    ok('brevo admin login = 200 otp_required', r.status === 200 && r.json.otp_required === true, JSON.stringify(r.json));
+    ok('brevo admin login response has no code', !r.json.dev_code);
+    eq('brevo admin login sent a third request', seen.length, 3);
+    const m2 = seen[2].json && seen[2].json.textContent && seen[2].json.textContent.match(/(\d{6})/);
+    ok('brevo login email carries a 6-digit code', !!m2, seen[2].json && seen[2].json.textContent);
+    r = await post('/api/auth/login-verify', { login_token: r.json.login_token, code: m2[1] });
+    eq('brevo login code verifies the admin', r.status, 200);
+  } finally {
+    child.kill('SIGTERM');
+    await new Promise((r) => child.on('exit', r));
+    stub.close();
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 }
