@@ -117,6 +117,9 @@ async function render(){
   app.innerHTML='';
   setActiveNav(); await refreshMe();
   if (my !== renderSeq) return;
+  // Plans are manager-only: hide the Plans tab for everyone else.
+  const offersNav=document.querySelector('[data-bnav="offers"]');
+  if(offersNav) offersNav.style.display=(me && me.role==='manager')?'':'none';
   const hero=document.getElementById('homeHero');
   const hash0=location.hash.replace(/^#\//,'')||'';
   if(hero) hero.hidden = !(hash0==='' );
@@ -247,10 +250,8 @@ async function renderHome(my){ my = my ?? ++renderSeq;
     const photo=CAT_PHOTOS[c]||CAT_PHOTOS['All'];
     return `<button type="button" class="cat-item${state.cat===c?' active':''}" onclick="setCategory('${esc(c)}')"><img class="cat-img" src="${esc(photo)}" alt="${esc(c||'All')}" onerror="this.onerror=null;this.src='${FALLBACK_IMG}'"><span>${c===''?'All':esc(c)}</span></button>`;
   }).join('');
-  const plansJ=await fetch('/api/plans').then(r=>r.json()).catch(()=>null);
-  const plans = plansJ&&plansJ.plans ? plansJ.plans : {Basic:{days:30,price:1500},Premium:{days:90,price:4500},Featured:{days:90,price:9000}};
-  const dealTaglines={Basic:'LIST YOUR PLACE, START SMALL',Premium:'STAND OUT FOR 90 DAYS',Featured:'TOP SPOT IN THE DIRECTORY'};
-  const deals = Object.entries(plans).map(([n,p])=>dealCard(n,p.price,p.days,dealTaglines[n]||n)).join('');
+  // Plans live only on the dedicated Plans page (#/offers) — they are for
+  // restaurants, not for customers browsing food on the home page.
   paint(my, `
   <div class="stat-chips">
     <span class="stat-chip"><b data-count="${total}">0</b> approved vendors</span>
@@ -259,8 +260,6 @@ async function renderHome(my){ my = my ?? ++renderSeq;
   </div>
   <div class="section-head"><h2>Categories</h2><button class="see-all" type="button" onclick="setCategory('')">See All</button></div>
   <div class="cat-row">${catRow}</div>
-  <div class="section-head"><h2>Plans for restaurants</h2><a class="see-all" href="#/offers">See All</a></div>
-  <div class="deals-row">${deals}</div>
   ${fast.length?`<div class="section-head"><h2>Delivery available</h2></div><div class="hscroll">${fastCards.join('')}</div>`:''}
   <div class="section-head" id="vendorsGrid"><h2>Restaurants</h2>
     <span style="display:flex;gap:8px;align-items:center"><button class="small${state.openOnly?'':' ghost'}" type="button" onclick="toggleOpenOnly()">${state.openOnly?'● Open now only':'Open now only'}</button>
@@ -502,6 +501,9 @@ async function fileToBase64(file){
   return btoa(bin);
 }
 async function renderOffers(my){ my = my ?? ++renderSeq;
+  // Plans are for restaurant managers only — customers and visitors
+  // never see prices here.
+  if(!me || me.role!=='manager'){ paint(my, `<h1>Plans for restaurants</h1><p>Plans are only for restaurant managers. Please <a href="#/login">log in</a> as a manager to see them.</p><p><a class="btn" href="#/manager">Go to Manager Panel</a></p>`); return; }
   const plansJ=await fetch('/api/plans').then(r=>r.json()).catch(()=>null);
   const plans = plansJ&&plansJ.plans ? plansJ.plans : {Basic:{days:30,price:1500},Premium:{days:90,price:4500},Featured:{days:90,price:9000}};
   const methods = plansJ&&plansJ.methods ? plansJ.methods : ['Bank Transfer','Easypaisa','JazzCash','Sadapay','Nayapay','Manual Reference'];
@@ -776,7 +778,7 @@ async function renderAdmin(my){ my = my ?? ++renderSeq;
   <div class="panel"><h3>Create a manager account</h3><p class="muted">Managers cannot register themselves. Create the account here — a setup code is emailed to their Gmail, and they activate it from the Register page with their own password. Then assign their vendor from the table above.</p>
   <form onsubmit="adminCreateManager(event)"><div class="row"><div><label>Manager name</label><input name="name" required></div><div><label>Manager email</label><input name="email" type="email" required></div></div>
   <button class="btn" style="margin-top:10px">Create manager</button><span id="cmMsg" class="muted"></span></form></div>
-  <div class="panel"><h3>Subscription plans — published by you</h3><p class="muted">Only published plans appear on the public Plans page and can be bought. Unpublishing a plan stops new sales; payments already submitted for it still work.</p>
+  <div class="panel"><h3>Subscription plans — published by you</h3><p class="muted">Only published plans appear on the manager-only Plans page and can be bought. Unpublishing a plan stops new sales; payments already submitted for it still work.</p>
   ${plans.plans.map(p=>`<p>#${p.id} <b>${esc(p.name)}</b> — ${p.days} days — PKR ${p.price_pkr} — ${p.published?'Published':'Unpublished'} <button class="small" onclick="adminPlanEdit(${p.id},${p.days},${p.price_pkr})">Edit</button> <button class="small" onclick="adminPlanToggle(${p.id},${p.published?0:1})">${p.published?'Unpublish':'Publish'}</button></p>`).join('')||'<p class="muted">No plans yet.</p>'}
   <form onsubmit="adminCreatePlan(event)"><div class="row"><div><label>New plan name</label><input name="name" required placeholder="e.g. Starter"></div><div><label>Days</label><input name="days" type="number" min="1" max="365" required value="30"></div><div><label>Price (PKR)</label><input name="price_pkr" type="number" min="0" required value="500"></div></div>
   <button class="btn" style="margin-top:10px">Add plan (published)</button><span id="planMsg" class="muted"></span></form></div>
