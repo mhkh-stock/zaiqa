@@ -632,13 +632,31 @@ window.doRequestCode=async()=>{
 window.doVerify=async(e)=>{ e.preventDefault(); const f=e.target;
   try{ const j=await api('POST','/api/auth/verify',{identifier:f.identifier.value,code:f.code.value}); document.getElementById('vMsg').textContent=' ✓ '+j.message; }
   catch(err){ document.getElementById('vMsg').textContent=' ✗ '+err.message; } };
-async function renderManager(my){ my = my ?? ++renderSeq;
+// ---- Dashboards v2 (2026-11-20): glass sidebar shell ---------------------
+// Every account dashboard (admin / manager / staff) now opens as a sidebar
+// of feature buttons; tapping one shows only that section, arranged
+// systematically inside. Same API calls, same rules, same actions as the
+// old FoodScope v1 panels — only the layout changed. Sections switch with
+// a fade/slide animation and no refetch; data actions still re-render.
+let dashAdmin = 'overview', dashMgr = 'overview';
+let adminData = null, adminMy = 0, mgrData = null, mgrMy = 0, mgrPlans = null;
+
+function dashShell(title, sub, items, active, goFn, content){
+  return `<div class="dash-wrap"><div class="dash-head"><h1>${esc(title)}</h1><p class="muted">${esc(sub)}</p></div>
+  <div class="dash"><aside class="dash-side">${items.map(it=>`<button type="button" class="${it[0]===active?'active':''}" onclick="${goFn}('${it[0]}')"><span class="dot"></span>${esc(it[1])}${it[2]?` <span class="side-count">${it[2]}</span>`:''}</button>`).join('')}</aside>
+  <div class="dash-main">${content}</div></div></div>`;
+}
+window.dashGo = (k)=>{ dashAdmin = k; if(adminData) paintAdmin(); };
+window.dashMgrGo = (k)=>{ dashMgr = k; if(mgrData) paintManager(); };
+
+async function renderManager(my){ my = my ?? ++renderSeq; mgrMy = my;
   if(!me){ app.innerHTML='<p>Please <a href="#/login">log in</a> as a manager first.</p>'; return; }
   if(me.role==='staff'){
     const j=await api('GET','/api/staff/vendor').catch(e=>({error:e.message}));
     if(j.error){ paint(my, `<div class="err">${esc(j.error)}</div>`); return; }
-    paint(my, `<h1>Staff Panel — ${esc(j.vendor.name)}</h1><p class="muted">You can manage menu and availability for your assigned vendor only.</p>
-    <div class="panel"><h3>Menu</h3>${j.menu.map(m=>`<div class="menu-item"><span>${esc(m.name)} — PKR ${m.price_pkr}</span><span>${m.available?'Available':'Unavailable'} <button class="small" onclick="staffToggle(${m.id},${m.available?0:1})">Toggle availability</button> <button class="small danger" onclick="staffDelete(${m.id})">Delete</button></span></div>`).join('')}</div>`);
+    const menuHtml = `<div class="panel"><h3>Menu — ${esc(j.vendor.name)}</h3><p class="muted">You can manage menu and availability for your assigned vendor only.</p>${j.menu.map(m=>`<div class="menu-item"><span>${esc(m.name)} — PKR ${m.price_pkr}</span><span>${m.available?'Available':'Unavailable'} <button class="small" onclick="staffToggle(${m.id},${m.available?0:1})">Toggle availability</button> <button class="small danger" onclick="staffDelete(${m.id})">Delete</button></span></div>`).join('')}</div>`;
+    paint(my, dashShell('Staff Panel', j.vendor.name, [['menu','Menu', j.menu.length]], 'menu', 'dashStaffGo', menuHtml));
+    window.dashStaffGo = ()=>{};
     window.staffToggle=async(id,avail)=>{ await api('PATCH','/api/staff/menu/'+id,{available:!!avail}); renderManager(); };
     window.staffDelete=async(id)=>{ const vals=await openFormModal('Delete this dish from the menu?', [], 'Delete'); if(!vals) return; await api('DELETE','/api/staff/menu/'+id); renderManager(); };
     return;
@@ -663,17 +681,26 @@ async function renderManager(my){ my = my ?? ++renderSeq;
       try{ await api('POST','/api/manager/vendors',body); renderManager(); }catch(err){ document.getElementById('svMsg').textContent=' ✗ '+err.message; } };
     return;
   }
+  mgrPlans=await fetch('/api/plans').then(r=>r.json()).catch(()=>null);
+  mgrData=j; paintManager();
+}
+function paintManager(){
+  const my=mgrMy, j=mgrData; if(!j || !j.vendor) return;
   const v=j.vendor;
-  const plansJ=await fetch('/api/plans').then(r=>r.json()).catch(()=>null);
+  const plansJ=mgrPlans;
   const planLine=plansJ&&plansJ.plans
     ? Object.entries(plansJ.plans).map(([n,p])=>`${n} ${p.days} days PKR ${p.price.toLocaleString()}`).join(' · ')
     : 'Basic 30 days PKR 1,500 · Premium 90 days PKR 4,500 · Featured 90 days PKR 9,000';
   const catOpts=['Desi','BBQ','Karahi','Fast Food','Sweets','Chinese','Bakery','Beverages']
     .map(c=>`<option${c===v.category?' selected':''}>${c}</option>`).join('');
-  paint(my, `<h1>Manager Panel — ${esc(v.name)}</h1>
-  <p><span class="badge plan">${esc(v.status)}</span> <span class="badge">${esc(v.subscription_plan||'No plan yet')}</span> ${v.subscription_expires_at?`<span class="badge">Subscription until ${esc(v.subscription_expires_at.slice(0,10))}</span>`:''}</p>
-  <div class="cards"><div class="card"><div class="num">${v.menu.length}</div><div class="lbl">Menu items</div></div><div class="card"><div class="num">${v.reviews.length}</div><div class="lbl">Reviews</div></div><div class="card"><div class="num">${v.payments.filter(p=>p.status==='approved').reduce((a,p)=>a+p.amount_pkr,0).toLocaleString()}</div><div class="lbl">PKR approved payments</div></div></div>
-  <div class="panel"><h3>Edit details</h3><p class="muted">Description, area, address, city, category, open/closed and delivery settings change here instantly. Name, maps link, delivery phone, images and slug need an admin-approved update request below.</p>
+  const pendingPay=(v.payments||[]).filter(p=>p.status==='pending').length;
+  const pendingReq=(v.update_requests||[]).filter(r=>r.status==='pending').length;
+  const secs={
+  overview:`<p><span class="badge plan">${esc(v.status)}</span> <span class="badge">${esc(v.subscription_plan||'No plan yet')}</span> ${v.subscription_expires_at?`<span class="badge">Subscription until ${esc(v.subscription_expires_at.slice(0,10))}</span>`:''}</p>
+  <div class="cards"><div class="card"><div class="num">${v.menu.length}</div><div class="lbl">Menu items</div></div><div class="card"><div class="num">${v.reviews.length}</div><div class="lbl">Reviews</div></div><div class="card"><div class="num">${v.payments.filter(p=>p.status==='approved').reduce((a,p)=>a+p.amount_pkr,0).toLocaleString()}</div><div class="lbl">PKR approved payments</div></div><div class="card"><div class="num">${pendingPay}</div><div class="lbl">Payments pending</div></div></div>
+  <div class="panel"><h3>Your listing at a glance</h3><p><b>${esc(v.name)}</b> · ${esc(v.category)} · ${esc(v.city)} · ${esc(v.area||'')}</p><p class="muted">${esc(v.description||'')}</p><p>${v.open_now?'<span style="color:var(--green-dark);font-weight:800">● Open now</span>':'<span class="muted">Currently closed</span>'} · Delivery ${v.delivery_enabled?'enabled':'off'} · ${esc(v.payment_methods||'Cash on Delivery')}</p><p><a class="btn" href="#/vendor/${v.id}">View public page</a> <a class="btn" href="#/offers" style="background:#fff;color:var(--green-dark);border:2px solid var(--green)">See plans</a></p></div>
+  ${pendingPay||pendingReq?`<div class="panel"><h3>Needs your attention</h3>${pendingPay?`<p>${pendingPay} payment(s) waiting for admin approval.</p>`:''}${pendingReq?`<p>${pendingReq} update request(s) waiting for admin approval.</p>`:''}</div>`:''}`,
+  details:`<div class="panel"><h3>Edit details</h3><p class="muted">Description, area, address, city, category, open/closed and delivery settings change here instantly. Name, maps link, delivery phone, images and slug need an admin-approved update request (see Update requests).</p>
   <form onsubmit="editDetails(event,${v.id})">
     <div class="row"><div><label>Category</label><select name="category">${catOpts}</select></div>
     <div><label>City</label><input name="city" value="${esc(v.city)}" required></div></div>
@@ -689,34 +716,38 @@ async function renderManager(my){ my = my ?? ++renderSeq;
     <label>Payment methods you accept</label>
     <div>${['Cash on Delivery','JazzCash','Easypaisa','Bank Transfer'].map(m=>`<label style="display:inline-block;margin-right:14px"><input type="checkbox" name="pay_${m}" style="width:auto"${(v.payment_methods||'').includes(m)?' checked':''}> ${m}</label>`).join('')}</div>
     <button class="btn" style="margin-top:10px">Save details</button><span id="edMsg" class="muted"></span></form>
-    ${v.status==='approved'?'<p class="muted">Note: saving details on an approved listing moves it to “pending update” until the admin re-approves it — it stays visible meanwhile.</p>':''}</div>
-  <div class="panel"><h3>Opening hours</h3><p class="muted">The page shows a live "Open now" badge from these hours (Pakistan time). Tick a day as closed when the kitchen is shut.</p>
+    ${v.status==='approved'?'<p class="muted">Note: saving details on an approved listing moves it to “pending update” until the admin re-approves it — it stays visible meanwhile.</p>':''}</div>`,
+  hours:`<div class="panel"><h3>Opening hours</h3><p class="muted">The page shows a live "Open now" badge from these hours (Pakistan time). Tick a day as closed when the kitchen is shut.</p>
   <form onsubmit="saveHours(event,${v.id})">
   ${[0,1,2,3,4,5,6].map(d=>{ const h=(v.hours||[]).find(x=>x.day===d); return `<div class="hours-row"><b style="width:90px">${DAY_NAMES[d]}</b>
   <label style="display:inline"><input type="checkbox" name="closed_${d}" style="width:auto"${h&&h.closed?' checked':''}> Closed</label>
   <input name="open_${d}" type="time" value="${h&&h.open?esc(h.open):'11:00'}" style="width:120px">
   <input name="close_${d}" type="time" value="${h&&h.close?esc(h.close):'23:00'}" style="width:120px"></div>`; }).join('')}
-  <button class="btn" style="margin-top:10px">Save hours</button><span id="hoursMsg" class="muted"></span></form></div>
-  <div class="panel"><h3>Subscription payment</h3><form onsubmit="payPlan(event,${v.id})">
+  <button class="btn" style="margin-top:10px">Save hours</button><span id="hoursMsg" class="muted"></span></form></div>`,
+  menu:`<div class="panel"><h3>Add menu item</h3><form onsubmit="addMenu(event)"><div class="row"><div><label>Name</label><input name="name" required></div><div><label>Price (PKR)</label><input name="price_pkr" type="number" required></div></div><button class="btn" style="margin-top:10px">Add item</button></form>
+  <h4>Menu</h4>${v.menu.map(m=>`<div class="menu-item"><span>${esc(m.name)} — PKR ${m.price_pkr}</span><span>${m.available?'Available':'Unavailable'} <button class="small" onclick="mgrToggle(${m.id},${m.available?0:1})">Toggle</button> <button class="small danger" onclick="mgrDelete(${m.id})">Delete</button></span></div>`).join('')}</div>`,
+  payments:`<div class="panel"><h3>Subscription payment</h3><form onsubmit="payPlan(event,${v.id})">
     <div class="row"><div><label>Plan</label><select name="plan">${plansJ&&plansJ.plans?Object.keys(plansJ.plans).map(n=>`<option>${esc(n)}</option>`).join(''):'<option>Basic</option><option>Premium</option><option>Featured</option>'}</select></div>
     <div><label>Method</label><select name="method"><option>Bank Transfer</option><option>Easypaisa</option><option>JazzCash</option><option>Sadapay</option><option>Nayapay</option><option>Manual Reference</option></select></div>
     <div><label>Reference / transaction ID</label><input name="reference_text" required></div></div>
     <label>Payment proof file (PNG/JPEG/PDF, under 5 MB, optional)</label><input name="proof_file" type="file" accept=".png,.jpg,.jpeg,.pdf">
     <p class="muted">${esc(planLine)}. Proof is checked by MIME type and file signature on the server.</p>
     <button class="btn">Submit payment</button><span id="payMsg" class="muted"></span></form>
-    <h4>Payments</h4>${v.payments.map(p=>`<p>${esc(p.plan)} — PKR ${p.amount_pkr} — ${esc(p.method)} — ${esc(p.status)}</p>`).join('')||'<p class="muted">No payments yet.</p>'}</div>
-  <div class="panel"><h3>Sensitive-field update request</h3><p class="muted">Name, Google Maps URL, delivery phone, image URLs and slug can only change after admin approval.</p>
+    <h4>Payments</h4>${v.payments.map(p=>`<p>${esc(p.plan)} — PKR ${p.amount_pkr} — ${esc(p.method)} — ${esc(p.status)}</p>`).join('')||'<p class="muted">No payments yet.</p>'}</div>`,
+  requests:`<div class="panel"><h3>Sensitive-field update request</h3><p class="muted">Name, Google Maps URL, delivery phone, image URLs and slug can only change after admin approval.</p>
   <form onsubmit="updateReq(event,${v.id})"><label>New business name (optional)</label><input name="name"><label>New Google Maps URL (optional)</label><input name="google_maps_url"><button class="btn" style="margin-top:10px">Request update</button><span id="urMsg" class="muted"></span></form>
-  <h4>Update requests</h4>${v.update_requests.map(r=>`<p>#${r.id} — ${esc(r.status)} — ${esc(r.fields_json)}</p>`).join('')||'<p class="muted">None yet.</p>'}</div>
-  <div class="panel"><h3>Add menu item</h3><form onsubmit="addMenu(event)"><div class="row"><div><label>Name</label><input name="name" required></div><div><label>Price (PKR)</label><input name="price_pkr" type="number" required></div></div><button class="btn" style="margin-top:10px">Add item</button></form>
-  <h4>Menu</h4>${v.menu.map(m=>`<div class="menu-item"><span>${esc(m.name)} — PKR ${m.price_pkr}</span><span>${m.available?'Available':'Unavailable'} <button class="small" onclick="mgrToggle(${m.id},${m.available?0:1})">Toggle</button> <button class="small danger" onclick="mgrDelete(${m.id})">Delete</button></span></div>`).join('')}</div>
-  <div class="panel"><h3>Certificates</h3><form onsubmit="addCert(event,${v.id})"><label>Certificate type</label><input name="cert_type" required placeholder="e.g. Food Licence"><label>Certificate file (PNG/JPEG/PDF, under 5 MB, optional)</label><input name="cert_file" type="file" accept=".png,.jpg,.jpeg,.pdf"><button class="btn" style="margin-top:10px">Submit certificate</button><span id="certMsg" class="muted"></span></form>
-  ${v.certificates.map(c=>`<p>${esc(c.cert_type)} — ${esc(c.status)}</p>`).join('')||'<p class="muted">No certificates yet.</p>'}</div>
-  <div class="panel"><h3>Gallery photo (needs admin approval before it shows publicly)</h3><form onsubmit="addGallery(event)"><label>Image URL</label><input name="url" required placeholder="https://…"><label>Caption</label><input name="caption"><button class="btn" style="margin-top:10px">Submit gallery photo</button><span id="galMsg" class="muted"></span></form>
-  <h4>Gallery</h4>${v.gallery.map(g=>`<p>${esc(g.url.slice(0,60))} — ${esc(g.status)}</p>`).join('')||'<p class="muted">No gallery photos yet.</p>'}</div>
-  <div class="panel"><h3>Reports about your listing</h3>${v.reports && v.reports.length ? v.reports.map(r=>`<p>#${r.id} — ${esc(r.type)} — ${esc(r.status)} — ${esc(r.message)}</p>`).join('') : '<p class="muted">No reports. Visitors can report a wrong phone, a closed shop, a moved location or a wrong price — those land here and with the admin.</p>'}</div>
-  <div class="panel"><h3>Add staff (menu/availability only, for this vendor)</h3><form onsubmit="addStaff(event)"><label>Staff name</label><input name="name" required><label>Staff email</label><input name="email" type="email" required><label>Staff password (8+ characters)</label><input name="password" type="password" required><button class="btn" style="margin-top:10px">Add staff</button><span id="staffMsg" class="muted"></span></form>
-  <p class="muted">Staff can only manage menu and availability for this vendor — never vendor details, payments or admin routes.</p></div>`);
+  <h4>Update requests</h4>${v.update_requests.map(r=>`<p>#${r.id} — ${esc(r.status)} — ${esc(r.fields_json)}</p>`).join('')||'<p class="muted">None yet.</p>'}</div>`,
+  certificates:`<div class="panel"><h3>Certificates</h3><form onsubmit="addCert(event,${v.id})"><label>Certificate type</label><input name="cert_type" required placeholder="e.g. Food Licence"><label>Certificate file (PNG/JPEG/PDF, under 5 MB, optional)</label><input name="cert_file" type="file" accept=".png,.jpg,.jpeg,.pdf"><button class="btn" style="margin-top:10px">Submit certificate</button><span id="certMsg" class="muted"></span></form>
+  ${v.certificates.map(c=>`<p>${esc(c.cert_type)} — ${esc(c.status)}</p>`).join('')||'<p class="muted">No certificates yet.</p>'}</div>`,
+  gallery:`<div class="panel"><h3>Gallery photo (needs admin approval before it shows publicly)</h3><form onsubmit="addGallery(event)"><label>Image URL</label><input name="url" required placeholder="https://…"><label>Caption</label><input name="caption"><button class="btn" style="margin-top:10px">Submit gallery photo</button><span id="galMsg" class="muted"></span></form>
+  <h4>Gallery</h4>${v.gallery.map(g=>`<p>${esc(g.url.slice(0,60))} — ${esc(g.status)}</p>`).join('')||'<p class="muted">No gallery photos yet.</p>'}</div>`,
+  reports:`<div class="panel"><h3>Reports about your listing</h3>${v.reports && v.reports.length ? v.reports.map(r=>`<p>#${r.id} — ${esc(r.type)} — ${esc(r.status)} — ${esc(r.message)}</p>`).join('') : '<p class="muted">No reports. Visitors can report a wrong phone, a closed shop, a moved location or a wrong price — those land here and with the admin.</p>'}</div>`,
+  staff:`<div class="panel"><h3>Add staff (menu/availability only, for this vendor)</h3><form onsubmit="addStaff(event)"><label>Staff name</label><input name="name" required><label>Staff email</label><input name="email" type="email" required><label>Staff password (8+ characters)</label><input name="password" type="password" required><button class="btn" style="margin-top:10px">Add staff</button><span id="staffMsg" class="muted"></span></form>
+  <p class="muted">Staff can only manage menu and availability for this vendor — never vendor details, payments or admin routes.</p></div>`,
+  };
+  const items=[['overview','Overview'],['details','My details'],['hours','Opening hours'],['menu','Menu',v.menu.length],['payments','Payments',pendingPay||null],['requests','Update requests',pendingReq||null],['certificates','Certificates'],['gallery','Gallery'],['reports','Reports'],['staff','Staff']];
+  paint(my, dashShell('Manager Panel', v.name, items, dashMgr in secs ? dashMgr : 'overview', 'dashMgrGo', secs[dashMgr in secs ? dashMgr : 'overview']));
+  animateCounters();
   window.editDetails=async(e,id)=>{ e.preventDefault(); const f=e.target;
     try{ await api('PATCH','/api/manager/vendors/'+id,{category:f.category.value,city:f.city.value,area:f.area.value,address:f.address.value,description:f.description.value,open:f.open.checked,delivery_enabled:f.delivery_enabled.checked,delivery_fee_pkr:+f.delivery_fee_pkr.value,min_order_pkr:+f.min_order_pkr.value,delivery_time:f.delivery_time.value,halal_declared:f.halal_declared.checked,payment_methods:['Cash on Delivery','JazzCash','Easypaisa','Bank Transfer'].filter(m=>f['pay_'+m].checked).join(', ')||'Cash on Delivery'});
       document.getElementById('edMsg').textContent=' ✓ Details saved.'; renderManager(); }
@@ -749,7 +780,7 @@ async function renderManager(my){ my = my ?? ++renderSeq;
     try{ await api('POST','/api/manager/vendors/'+id+'/hours',{hours}); document.getElementById('hoursMsg').textContent=' ✓ Hours saved.'; renderManager(); }
     catch(err){ document.getElementById('hoursMsg').textContent=' ✗ '+err.message; } };
 }
-async function renderAdmin(my){ my = my ?? ++renderSeq;
+async function renderAdmin(my){ my = my ?? ++renderSeq; adminMy = my;
   if(!me){ app.innerHTML='<p>Please <a href="#/login">log in</a> as the Portal Admin first.</p>'; return; }
   if(me.role!=='owner'){ app.innerHTML='<div class="err">Admin panel is for the Portal Admin (owner) only. Your role: '+esc(me.role)+'</div>'; return; }
   const [rep, vendors, pays, reqs, reviews, auditLog, certs, gallery, users, contacts, activity, lreports, plans] = await Promise.all([
@@ -759,9 +790,22 @@ async function renderAdmin(my){ my = my ?? ++renderSeq;
     api('GET','/api/admin/activity'), api('GET','/api/admin/listing-reports'), api('GET','/api/admin/plans'),
   ]).catch(e=>{ paint(my, `<div class="err">${esc(e.message)}</div>`); return []; });
   if(!rep) return;
+  adminData={rep, vendors, pays, reqs, reviews, auditLog, certs, gallery, users, contacts, activity, lreports, plans};
+  paintAdmin();
+}
+function paintAdmin(){
+  const my=adminMy, d=adminData; if(!d) return;
+  const {rep, vendors, pays, reqs, reviews, auditLog, certs, gallery, users, contacts, activity, lreports, plans}=d;
   const t=rep.totals;
-  paint(my, `<h1>Admin Dashboard — Zaiqa</h1><p class="muted">Portal Admin overview. All approvals, suspensions and emergency edits are audit-logged.</p>
-  <div class="cards">
+  const pendingVendors=vendors.vendors.filter(v=>v.status==='pending'||v.status==='pending_update').length;
+  const pendingPays=pays.payments.filter(p=>p.status==='pending').length;
+  const pendingCerts=certs.certificates.filter(c=>c.status==='pending').length;
+  const pendingGallery=gallery.gallery.filter(g=>g.status==='pending').length;
+  const pendingReqs=reqs.requests.filter(r=>r.status==='pending').length;
+  const pendingReports=(lreports.reports||[]).filter(r=>r.status==='pending').length;
+  const pendingApprovals=pendingCerts+pendingGallery+pendingReqs;
+  const secs={
+  overview:`<div class="cards">
     <div class="card"><div class="num" data-count="${t.vendors_total}">0</div><div class="lbl">Vendors total</div></div>
     <div class="card"><div class="num" data-count="${t.vendors_approved}">0</div><div class="lbl">Approved</div></div>
     <div class="card"><div class="num" data-count="${t.vendors_pending}">0</div><div class="lbl">Pending</div></div>
@@ -769,12 +813,12 @@ async function renderAdmin(my){ my = my ?? ++renderSeq;
     <div class="card"><div class="num" data-count="${t.payments_approved_total_pkr}">0</div><div class="lbl">PKR approved payments</div></div>
   </div>
   <div class="panel"><h3>Recent activity — reviews per day (last 14 days)</h3><p>${activity.activity.map(a=>`${esc(a.d)}: ${a.n}`).join(' · ')||'No reviews yet.'}</p></div>
-  <div class="panel"><h3>Top 5 by rating</h3><table><tr><th>Vendor</th><th>City</th><th>Avg</th><th>Reviews</th></tr>${rep.top_by_rating.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.city)}</td><td>${x.avg_overall}</td><td>${x.n}</td></tr>`).join('')||'<tr><td colspan="4">No rated vendors yet</td></tr>'}</table>
-  <h3>Top 5 by review count</h3><table><tr><th>Vendor</th><th>City</th><th>Reviews</th><th>Avg</th></tr>${rep.top_by_review_count.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.city)}</td><td>${x.n}</td><td>${x.avg_overall}</td></tr>`).join('')||'<tr><td colspan="4">None yet</td></tr>'}</table>
+  <div class="panel"><h3>Top 5 by rating</h3><div class="table-wrap"><table><tr><th>Vendor</th><th>City</th><th>Avg</th><th>Reviews</th></tr>${rep.top_by_rating.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.city)}</td><td>${x.avg_overall}</td><td>${x.n}</td></tr>`).join('')||'<tr><td colspan="4">No rated vendors yet</td></tr>'}</table></div>
+  <h3>Top 5 by review count</h3><div class="table-wrap"><table><tr><th>Vendor</th><th>City</th><th>Reviews</th><th>Avg</th></tr>${rep.top_by_review_count.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.city)}</td><td>${x.n}</td><td>${x.avg_overall}</td></tr>`).join('')||'<tr><td colspan="4">None yet</td></tr>'}</table></div>
   <h3>Category totals</h3><p>${rep.category_totals.map(c=>`${esc(c.category)}: ${c.n}`).join(' · ')}</p>
   <h3>Menus not updated for 60+ days</h3>${rep.stale_menus && rep.stale_menus.length ? rep.stale_menus.map(m=>`<p>${esc(m.name)} (${esc(m.city)}) — last update ${m.last_menu_update?esc(String(m.last_menu_update).slice(0,10)):'never'}</p>`).join('') : '<p class="muted">All menus are fresh.</p>'}
-  <p>Listing reports pending: <b>${t.listing_reports_pending||0}</b></p></div>
-  <div class="panel"><h3>Vendors — approve / reject / suspend / assign</h3><p class="muted">Unclaimed listings show "Unassigned" — assign each one to a registered manager by email. One vendor per manager; a manager only ever sees their own vendor.</p><table><tr><th>Name</th><th>City</th><th>Status</th><th>Plan</th><th>Manager</th><th>Actions</th></tr>${vendors.vendors.map(v=>`<tr><td>${esc(v.name)}</td><td>${esc(v.city)}</td><td>${esc(v.status)}</td><td>${esc(v.subscription_plan||'—')}</td><td>${v.manager_name?esc(v.manager_name)+' ('+esc(v.manager_email||'')+')':'Unassigned'}</td><td>
+  <p>Listing reports pending: <b>${t.listing_reports_pending||0}</b></p></div>`,
+  vendors:`<div class="panel"><h3>Vendors — approve / reject / suspend / assign</h3><p class="muted">Unclaimed listings show "Unassigned" — assign each one to a registered manager by email. One vendor per manager; a manager only ever sees their own vendor.</p><div class="table-wrap"><table><tr><th>Name</th><th>City</th><th>Status</th><th>Plan</th><th>Manager</th><th>Actions</th></tr>${vendors.vendors.map(v=>`<tr><td>${esc(v.name)}</td><td>${esc(v.city)}</td><td>${esc(v.status)}</td><td>${esc(v.subscription_plan||'—')}</td><td>${v.manager_name?esc(v.manager_name)+' ('+esc(v.manager_email||'')+')':'Unassigned'}</td><td>
     <button class="small" onclick="adminAssign(${v.id})">Assign</button>
     ${v.manager_id?`<button class="small ghost" onclick="adminUnassign(${v.id})">Unassign</button>`:''}
     <button class="small" onclick="adminVendor(${v.id},'approve')">Approve</button>
@@ -783,24 +827,27 @@ async function renderAdmin(my){ my = my ?? ++renderSeq;
     <button class="small ghost" onclick="adminVendor(${v.id},'unsuspend')">Unsuspend</button>
     <button class="small" onclick="adminVerifyHalal(${v.id})">Verify halal</button>
     <button class="small ghost" onclick="adminEmergencyEdit(${v.id})">Emergency rename</button>
-    <button class="small danger" onclick="adminEmergencyDelete(${v.id})">Emergency delete</button></td></tr>`).join('')}</table>
-  <p class="muted">Emergency rename/delete both require a safety reason (5+ characters) and are audit-logged.</p></div>
-  <div class="panel"><h3>Create a manager account</h3><p class="muted">Managers cannot register themselves. Create the account here — a setup code is emailed to their Gmail, and they activate it from the Register page with their own password. Then assign their vendor from the table above.</p>
+    <button class="small danger" onclick="adminEmergencyDelete(${v.id})">Emergency delete</button></td></tr>`).join('')}</table></div>
+  <p class="muted">Emergency rename/delete both require a safety reason (5+ characters) and are audit-logged.</p></div>`,
+  managers:`<div class="panel"><h3>Create a manager account</h3><p class="muted">Managers cannot register themselves. Create the account here — a setup code is emailed to their Gmail, and they activate it from the Register page with their own password. Then assign their vendor from the Vendors section.</p>
   <form onsubmit="adminCreateManager(event)"><div class="row"><div><label>Manager name</label><input name="name" required></div><div><label>Manager email</label><input name="email" type="email" required></div></div>
   <button class="btn" style="margin-top:10px">Create manager</button><span id="cmMsg" class="muted"></span></form></div>
-  <div class="panel"><h3>Subscription plans — published by you</h3><p class="muted">Only published plans appear on the manager-only Plans page and can be bought. Unpublishing a plan stops new sales; payments already submitted for it still work.</p>
+  <div class="panel"><h3>Users — suspend / activate</h3>${users.users.map(u=>`<p>#${u.id} ${esc(u.name)} (${esc(u.email||u.phone||'')}) — ${esc(u.role)} — ${esc(u.status)} ${u.role!=='owner'?`<button class="small ghost" onclick="adminUser(${u.id},'suspend')">Suspend</button> <button class="small" onclick="adminUser(${u.id},'activate')">Activate</button>`:''}</p>`).join('')}</div>`,
+  plans:`<div class="panel"><h3>Subscription plans — published by you</h3><p class="muted">Only published plans appear on the manager-only Plans page and can be bought. Unpublishing a plan stops new sales; payments already submitted for it still work.</p>
   ${plans.plans.map(p=>`<p>#${p.id} <b>${esc(p.name)}</b> — ${p.days} days — PKR ${p.price_pkr} — ${p.published?'Published':'Unpublished'} <button class="small" onclick="adminPlanEdit(${p.id},${p.days},${p.price_pkr})">Edit</button> <button class="small" onclick="adminPlanToggle(${p.id},${p.published?0:1})">${p.published?'Unpublish':'Publish'}</button></p>`).join('')||'<p class="muted">No plans yet.</p>'}
   <form onsubmit="adminCreatePlan(event)"><div class="row"><div><label>New plan name</label><input name="name" required placeholder="e.g. Starter"></div><div><label>Days</label><input name="days" type="number" min="1" max="365" required value="30"></div><div><label>Price (PKR)</label><input name="price_pkr" type="number" min="0" required value="500"></div></div>
-  <button class="btn" style="margin-top:10px">Add plan (published)</button><span id="planMsg" class="muted"></span></form></div>
-  <div class="panel"><h3>Certificates</h3>${certs.certificates.map(c=>`<p>#${c.id} ${esc(c.manager_name)} — ${esc(c.cert_type)} — ${esc(c.status)} ${c.status==='pending'?`<button class="small" onclick="adminCert(${c.id},'approve')">Approve</button> <button class="small ghost" onclick="adminCert(${c.id},'reject')">Reject</button>`:''}</p>`).join('')||'<p class="muted">No certificates.</p>'}</div>
+  <button class="btn" style="margin-top:10px">Add plan (published)</button><span id="planMsg" class="muted"></span></form></div>`,
+  payments:`<div class="panel"><h3>Payments</h3>${pays.payments.map(p=>`<p>#${p.id} ${esc(p.manager_name)} — ${esc(p.plan)} PKR ${Number(p.amount_pkr).toLocaleString()} — ${esc(p.method)} — ${esc(p.status)} ${p.status==='pending'?`<button class="small" onclick="adminPay(${p.id},'approve')">Approve</button> <button class="small ghost" onclick="adminPay(${p.id},'reject')">Reject</button>`:''}</p>`).join('')||'<p class="muted">No payments.</p>'}</div>`,
+  approvals:`<div class="panel"><h3>Certificates</h3>${certs.certificates.map(c=>`<p>#${c.id} ${esc(c.manager_name)} — ${esc(c.cert_type)} — ${esc(c.status)} ${c.status==='pending'?`<button class="small" onclick="adminCert(${c.id},'approve')">Approve</button> <button class="small ghost" onclick="adminCert(${c.id},'reject')">Reject</button>`:''}</p>`).join('')||'<p class="muted">No certificates.</p>'}</div>
   <div class="panel"><h3>Gallery images (pending approval)</h3>${gallery.gallery.filter(g=>g.status==='pending').map(g=>`<p>#${g.id} ${esc(g.vendor_name)} — ${esc(g.url.slice(0,60))} <button class="small" onclick="adminGallery(${g.id},'approve')">Approve</button> <button class="small ghost" onclick="adminGallery(${g.id},'reject')">Reject</button></p>`).join('')||'<p class="muted">No pending gallery images.</p>'}</div>
-  <div class="panel"><h3>Listing reports — wrong info / wrong prices</h3>${lreports.reports.map(r=>`<p>#${r.id} ${esc(r.vendor_name)} (${esc(r.vendor_city)}) — ${esc(r.type)} — ${esc(r.status)} — ${esc(r.message)} ${r.status==='pending'?`<button class="small" onclick="adminReport(${r.id},'resolve')">Resolve</button> <button class="small ghost" onclick="adminReport(${r.id},'dismiss')">Dismiss</button>`:''}</p>`).join('')||'<p class="muted">No reports.</p>'}</div>
-  <div class="panel"><h3>Users — suspend / activate</h3>${users.users.map(u=>`<p>#${u.id} ${esc(u.name)} (${esc(u.email||u.phone||'')}) — ${esc(u.role)} — ${esc(u.status)} ${u.role!=='owner'?`<button class="small ghost" onclick="adminUser(${u.id},'suspend')">Suspend</button> <button class="small" onclick="adminUser(${u.id},'activate')">Activate</button>`:''}</p>`).join('')}</div>
-  <div class="panel"><h3>Contact messages</h3>${contacts.contacts.slice(0,20).map(c=>`<p>${esc(c.name)} (${esc(c.email)}) — ${esc(c.subject)}: ${esc(c.message.slice(0,100))}</p>`).join('')||'<p class="muted">No contact messages.</p>'}</div>
-  <div class="panel"><h3>Payments</h3>${pays.payments.map(p=>`<p>#${p.id} ${esc(p.manager_name)} — ${esc(p.plan)} PKR ${Number(p.amount_pkr).toLocaleString()} — ${esc(p.method)} — ${esc(p.status)} ${p.status==='pending'?`<button class="small" onclick="adminPay(${p.id},'approve')">Approve</button> <button class="small ghost" onclick="adminPay(${p.id},'reject')">Reject</button>`:''}</p>`).join('')||'<p class="muted">No payments.</p>'}</div>
-  <div class="panel"><h3>Update requests</h3>${reqs.requests.map(r=>`<p>#${r.id} ${esc(r.vendor_name)} — ${esc(r.status)} — ${esc(r.fields_json)} ${r.status==='pending'?`<button class="small" onclick="adminUpd(${r.id},'approve')">Approve</button> <button class="small ghost" onclick="adminUpd(${r.id},'reject')">Reject</button>`:''}</p>`).join('')||'<p class="muted">None.</p>'}</div>
-  <div class="panel"><h3>Reviews — moderation</h3>${reviews.reviews.slice(0,20).map(r=>`<p>#${r.id} ${esc(r.vendor_name)} — ${esc(r.customer_name)} — ${esc(r.status)} — ${esc(r.comment.slice(0,80))} <button class="small ghost" onclick="adminReviewNote(${r.id})">Add note</button> <button class="small ghost" onclick="adminReviewReply(${r.id})">Reply</button> <button class="small ghost" onclick="adminReview(${r.id},'delete')">Soft-delete</button> <button class="small" onclick="adminReview(${r.id},'restore')">Restore (admin only)</button></p>`).join('')||'<p class="muted">No reviews.</p>'}</div>
-  <div class="panel"><h3>Audit log (latest)</h3>${auditLog.log.slice(0,30).map(a=>`<p class="muted">${esc(a.created_at)} — ${esc(a.action)} — ${esc(a.target_type||'')} #${a.target_id??''} ${a.reason?esc('· '+a.reason):''}</p>`).join('')}</div>`);
+  <div class="panel"><h3>Update requests</h3>${reqs.requests.map(r=>`<p>#${r.id} ${esc(r.vendor_name)} — ${esc(r.status)} — ${esc(r.fields_json)} ${r.status==='pending'?`<button class="small" onclick="adminUpd(${r.id},'approve')">Approve</button> <button class="small ghost" onclick="adminUpd(${r.id},'reject')">Reject</button>`:''}</p>`).join('')||'<p class="muted">None.</p>'}</div>`,
+  reports:`<div class="panel"><h3>Listing reports — wrong info / wrong prices</h3>${lreports.reports.map(r=>`<p>#${r.id} ${esc(r.vendor_name)} (${esc(r.vendor_city)}) — ${esc(r.type)} — ${esc(r.status)} — ${esc(r.message)} ${r.status==='pending'?`<button class="small" onclick="adminReport(${r.id},'resolve')">Resolve</button> <button class="small ghost" onclick="adminReport(${r.id},'dismiss')">Dismiss</button>`:''}</p>`).join('')||'<p class="muted">No reports.</p>'}</div>`,
+  reviews:`<div class="panel"><h3>Reviews — moderation</h3>${reviews.reviews.slice(0,20).map(r=>`<p>#${r.id} ${esc(r.vendor_name)} — ${esc(r.customer_name)} — ${esc(r.status)} — ${esc(r.comment.slice(0,80))} <button class="small ghost" onclick="adminReviewNote(${r.id})">Add note</button> <button class="small ghost" onclick="adminReviewReply(${r.id})">Reply</button> <button class="small ghost" onclick="adminReview(${r.id},'delete')">Soft-delete</button> <button class="small" onclick="adminReview(${r.id},'restore')">Restore (admin only)</button></p>`).join('')||'<p class="muted">No reviews.</p>'}</div>`,
+  messages:`<div class="panel"><h3>Contact messages</h3>${contacts.contacts.slice(0,20).map(c=>`<p>${esc(c.name)} (${esc(c.email)}) — ${esc(c.subject)}: ${esc(c.message.slice(0,100))}</p>`).join('')||'<p class="muted">No contact messages.</p>'}</div>`,
+  audit:`<div class="panel"><h3>Audit log (latest)</h3>${auditLog.log.slice(0,30).map(a=>`<p class="muted">${esc(a.created_at)} — ${esc(a.action)} — ${esc(a.target_type||'')} #${a.target_id??''} ${a.reason?esc('· '+a.reason):''}</p>`).join('')}</div>`,
+  };
+  const items=[['overview','Overview'],['vendors','Vendors',pendingVendors||null],['managers','Managers'],['plans','Plans'],['payments','Payments',pendingPays||null],['approvals','Approvals',pendingApprovals||null],['reports','Reports',pendingReports||null],['reviews','Reviews'],['messages','Messages'],['audit','Audit log']];
+  paint(my, dashShell('Admin Dashboard', 'Portal Admin overview. All approvals, suspensions and emergency edits are audit-logged.', items, dashAdmin in secs ? dashAdmin : 'overview', 'dashGo', secs[dashAdmin in secs ? dashAdmin : 'overview']));
   animateCounters();
   window.adminVendor=async(id,act)=>{ await api('POST',`/api/admin/vendors/${id}/${act}`,{}); renderAdmin(); };
   window.adminVendorReason=async(id,act)=>{ const noun=act==='reject'?'rejection':act==='suspend'?'suspension':act; const vals=await openFormModal('Reason for '+noun, [{key:'reason', label:'Reason (required)', type:'textarea', required:true}], 'Send'); if(!vals) return; await api('POST',`/api/admin/vendors/${id}/${act}`,{reason:vals.reason}); renderAdmin(); };
@@ -820,12 +867,14 @@ async function renderAdmin(my){ my = my ?? ++renderSeq;
   window.adminEmergencyDelete=async(id)=>{ const vals=await openFormModal('Delete this vendor permanently?', [{key:'reason', label:'Safety reason (5+ characters, required)', type:'textarea', required:true}], 'Delete permanently'); if(!vals) return; await api('DELETE',`/api/admin/vendors/${id}`,{reason:vals.reason}); renderAdmin(); };
   window.adminCreateManager=async(e)=>{ e.preventDefault(); const f=e.target;
     try{ const j=await api('POST','/api/admin/managers',{name:f.name.value,email:f.email.value});
-      document.getElementById('cmMsg').textContent=' ✓ '+j.message; f.reset(); renderAdmin(); }
-    catch(err){ document.getElementById('cmMsg').textContent=' ✗ '+err.message; } };
+      f.reset(); await renderAdmin();
+      const el=document.getElementById('cmMsg'); if(el) el.textContent=' ✓ '+j.message; }
+    catch(err){ const el=document.getElementById('cmMsg'); if(el) el.textContent=' ✗ '+err.message; } };
   window.adminCreatePlan=async(e)=>{ e.preventDefault(); const f=e.target;
     try{ await api('POST','/api/admin/plans',{name:f.name.value,days:+f.days.value,price_pkr:+f.price_pkr.value});
-      document.getElementById('planMsg').textContent=' ✓ Plan added and published.'; f.reset(); renderAdmin(); }
-    catch(err){ document.getElementById('planMsg').textContent=' ✗ '+err.message; } };
+      f.reset(); await renderAdmin();
+      const el=document.getElementById('planMsg'); if(el) el.textContent=' ✓ Plan added and published.'; }
+    catch(err){ const el=document.getElementById('planMsg'); if(el) el.textContent=' ✗ '+err.message; } };
   window.adminPlanToggle=async(id,published)=>{ await api('PATCH','/api/admin/plans/'+id,{published:!!published}); renderAdmin(); };
   window.adminPlanEdit=async(id,days,price)=>{ const vals=await openFormModal('Edit plan', [{key:'days', label:'Days (1-365)', type:'text', value:String(days), required:true}, {key:'price_pkr', label:'Price in PKR', type:'text', value:String(price), required:true}], 'Save plan'); if(!vals) return;
     try{ await api('PATCH','/api/admin/plans/'+id,{days:+vals.days,price_pkr:+vals.price_pkr}); renderAdmin(); }

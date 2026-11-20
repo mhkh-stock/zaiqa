@@ -195,3 +195,45 @@ canvas#chart{width:100%;max-height:220px}
 .hours-table td{padding:7px 8px;border-bottom:1px solid var(--line)}
 .hours-table tr.today td{font-weight:800;color:var(--green-dark);background:var(--mint)}
 .hours-row{display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap}
+
+/* ---------- dashboards v2: glass sidebar shell + motion ---------- */
+.dash-wrap{background:linear-gradient(160deg,#dff0da 0%,#eef7ea 42%,#f6f7f4 100%);border-radius:26px;padding:16px;margin:16px 0}
+.dash-head{padding:2px 6px 12px}
+.dash-head h1{margin:0}
+.dash-head p{margin:6px 0 0}
+.dash{display:flex;gap:14px;align-items:flex-start}
+.dash-side{flex:0 0 212px;position:sticky;top:78px;background:rgba(255,255,255,.62);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.75);border-radius:20px;box-shadow:0 8px 24px rgba(25,45,20,.10);padding:10px;display:flex;flex-direction:column;gap:5px}
+.dash-side button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:transparent;border:0;border-radius:13px;padding:11px 12px;font-size:14.5px;font-weight:700;color:#3d4a38;transition:background .18s ease,color .18s ease,transform .18s ease,box-shadow .18s ease}
+.dash-side button .dot{width:9px;height:9px;border-radius:50%;background:#c9d6c6;flex:0 0 auto;transition:background .18s ease,transform .18s ease}
+.dash-side button:hover{background:rgba(67,160,71,.13);color:var(--green-deep);transform:translateX(3px)}
+.dash-side button:hover .dot{background:var(--green)}
+.dash-side button.active{background:var(--green);color:#fff;box-shadow:0 6px 16px rgba(46,125,50,.35)}
+.dash-side button.active .dot{background:#fff;transform:scale(1.25)}
+.side-count{margin-left:auto;background:var(--orange);color:#fff;border-radius:999px;min-width:22px;height:22px;padding:0 6px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}
+.dash-side button.active .side-count{background:#fff;color:var(--green-dark)}
+.dash-main{flex:1;min-width:0;animation:dashIn .35s ease}
+@keyframes dashIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.dash-main .panel{background:rgba(255,255,255,.8);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.8);animation:panelIn .4s ease}
+@keyframes panelIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.dash-main .card{background:rgba(255,255,255,.8);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.8);transition:transform .2s ease,box-shadow .2s ease}
+.dash-main .card:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(25,45,20,.16)}
+.dash-main .card .num{background:linear-gradient(135deg,var(--green) 0%,var(--green-dark) 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.table-wrap{overflow-x:auto;margin:0 -4px;padding:2px 4px 6px}
+.table-wrap table{min-width:680px}
+.btn,.small,.claim-btn,.cta-orange,.search-go,.qty-btn,.heart-btn,.bottomnav a{transition:background .18s ease,color .18s ease,border-color .18s ease,transform .18s ease,box-shadow .18s ease}
+.btn:active,.small:active,.claim-btn:active,.cta-orange:active{transform:scale(.96)}
+.vendor,.deal-card,.panel,.stat-chip{transition:transform .2s ease,box-shadow .2s ease}
+.vendor:hover{transform:translateY(-3px);box-shadow:0 14px 30px rgba(25,45,20,.14)}
+@media(max-width:760px){
+  .dash{flex-direction:column}
+  .dash-side{position:static;flex:1 1 auto;width:100%;flex-direction:row;overflow-x:auto;padding:8px;scrollbar-width:none}
+  .dash-side::-webkit-scrollbar{display:none}
+  .dash-side button{width:auto;white-space:nowrap;flex:0 0 auto}
+  .dash-side button:hover{transform:none}
+  .dash-wrap{padding:10px;border-radius:20px}
+  .table-wrap table{min-width:620px}
+}
+@media(prefers-reduced-motion:reduce){
+  .dash-main,.dash-main .panel{animation:none}
+  *{transition-duration:.01ms !important}
+}
