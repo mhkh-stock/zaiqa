@@ -114,19 +114,25 @@ async function render(){
   // Clear the old page at once: without this, the previous page stays
   // visible while refreshMe() + the new page's fetches are still running
   // (seen as a stale-render flash when tapping Home from another page).
-  app.innerHTML='';
+  // A short loading line keeps the area from collapsing empty meanwhile.
+  app.innerHTML='<p class="muted" style="padding:16px">Loading…</p>';
+  // Hide the home hero at once too — it lives outside #app, so clearing
+  // #app alone left the old hero visible on the new route (vendor direction).
+  const hero0=document.getElementById('homeHero');
+  const hash0=location.hash.replace(/^#\//,'')||'';
+  if(hero0) hero0.hidden = !(hash0==='' );
+  const float0=document.getElementById('floatOrder');
+  if(float0 && hash0!=='') float0.hidden = true;
   setActiveNav(); await refreshMe();
   if (my !== renderSeq) return;
   // Plans are manager-only: hide the Plans tab for everyone else.
   const offersNav=document.querySelector('[data-bnav="offers"]');
   if(offersNav) offersNav.style.display=(me && me.role==='manager')?'':'none';
-  const hero=document.getElementById('homeHero');
-  const hash0=location.hash.replace(/^#\//,'')||'';
-  if(hero) hero.hidden = !(hash0==='' );
-  const floatEl=document.getElementById('floatOrder');
-  if(floatEl && hash0!=='') floatEl.hidden = true;
   const hash=location.hash.replace(/^#\//,'')||'';
   const [route, param] = hash.split('/');
+  // A search belongs to the home page: entering a vendor page drops it,
+  // so a stale query can never override the vendor route.
+  if(route==='vendor'){ state.q=''; const s=document.getElementById('topSearch'); if(s) s.value=''; }
   try{
     if(route==='' ) return renderHome(my);
     if(route==='vendor') return renderVendor(param, my);
@@ -153,7 +159,11 @@ async function loadVendors(){
 }
 window.scrollToVendors=()=>{ const el=document.getElementById('vendorsGrid'); if(el) el.scrollIntoView({behavior:'smooth'}); };
 window.focusSearch=()=>{ const el=document.getElementById('topSearch'); if(el){ el.focus(); el.scrollIntoView({behavior:'smooth',block:'center'}); } return false; };
-window.applyFilters=()=>{ const s=document.getElementById('topSearch'); state.q=s?s.value.trim():''; renderHome(); };
+window.applyFilters=()=>{ const s=document.getElementById('topSearch'); state.q=s?s.value.trim():'';
+  // Search results live on the home page: from any other page, go home
+  // through the route instead of painting home content under a vendor URL
+  // (which also left the page stuck when the URL never changed).
+  if((location.hash.replace(/^#\//,'')||'')===''){ renderHome(); } else { location.hash='#/'; } };
 document.getElementById('topSearch').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); applyFilters(); } });
 function buildCityMenu(){
   const menu=document.getElementById('cityMenu'); if(!menu) return;
