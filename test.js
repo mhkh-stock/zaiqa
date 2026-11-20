@@ -248,8 +248,8 @@ async function runTests() {
   r = await fetch(BASE + '/');
   ok('homepage 200 html', r.status === 200 && (await r.text()).includes('Zaiqa'));
   r = await anon.get('/api/plans');
-  eq('plans: Basic 1500/30d', r.json.plans.Basic, { days: 30, price: 1500 });
-  eq('plans: Featured 9000/90d', r.json.plans.Featured, { days: 90, price: 9000 });
+  eq('plans hidden from public (manager-only)', Object.keys(r.json.plans).length, 0);
+  eq('payment methods hidden from public', r.json.methods.length, 0);
   r = await anon.get('/api/categories');
   ok('categories include Karahi + BBQ', r.json.categories.includes('Karahi') && r.json.categories.includes('BBQ'));
 
@@ -573,8 +573,8 @@ async function runTests() {
   ok('never-approved vendor still not public after unsuspend', !r.json.vendors.some((v) => v.id === 6));
 
   console.log('\n== admin-published plans ==');
-  r = await anon.get('/api/plans');
-  eq('public plans = 3 seeded', Object.keys(r.json.plans).length, 3);
+  r = await mgr.get('/api/plans');
+  eq('manager plans = 3 seeded', Object.keys(r.json.plans).length, 3);
   r = await admin.get('/api/admin/plans');
   eq('admin plans list = 3', r.json.plans.length, 3);
   r = await admin.post('/api/admin/plans', { name: 'Starter', days: 7, price_pkr: 500 });
@@ -586,12 +586,12 @@ async function runTests() {
   eq('admin create plan empty name = 400', r.status, 400);
   r = await admin.post('/api/admin/plans', { name: 'Bad', days: 0, price_pkr: 500 });
   eq('admin create plan 0 days = 400', r.status, 400);
-  r = await anon.get('/api/plans');
-  eq('public plans now 4 incl Starter', Object.keys(r.json.plans).length, 4);
+  r = await mgr.get('/api/plans');
+  eq('manager plans now 4 incl Starter', Object.keys(r.json.plans).length, 4);
   eq('Starter public price 500/7d', r.json.plans.Starter, { days: 7, price: 500 });
   r = await admin.patch('/api/admin/plans/' + starterId, { published: false });
   eq('admin unpublish Starter = 200', r.status, 200);
-  r = await anon.get('/api/plans');
+  r = await mgr.get('/api/plans');
   ok('unpublished Starter hidden publicly', !r.json.plans.Starter);
   r = await mgr.post('/api/manager/payments', { plan: 'Starter', method: 'JazzCash', reference_text: 'PLAN-TEST' });
   eq('payment with unpublished plan = 400', r.status, 400);

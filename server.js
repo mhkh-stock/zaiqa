@@ -794,7 +794,14 @@ async function handle(req, res) {
         setCookie(res, 'zq_csrf', token);
         return sendJSON(res, 200, { csrfToken: token });
       }
-      if (method === 'GET' && pathname === '/api/plans') return sendJSON(res, 200, { plans: getPlans(true), methods: PAYMENT_METHODS, categories: CATEGORIES });
+      if (method === 'GET' && pathname === '/api/plans') {
+        // Plans are manager-only: the public (and customers) never see
+        // plan names or prices through this endpoint. Categories stay
+        // public — the home page needs them.
+        const { user } = getSessionUser(req);
+        if (!user || user.role !== 'manager') return sendJSON(res, 200, { plans: {}, methods: [], categories: CATEGORIES });
+        return sendJSON(res, 200, { plans: getPlans(true), methods: PAYMENT_METHODS, categories: CATEGORIES });
+      }
       if (method === 'GET' && pathname === '/api/categories') return sendJSON(res, 200, { categories: CATEGORIES });
       // ---- auth ----
       if (method === 'POST' && pathname === '/api/auth/register-customer') {
