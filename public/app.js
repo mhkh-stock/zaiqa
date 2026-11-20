@@ -111,6 +111,10 @@ function setActiveNav(){
 }
 async function render(){
   const my = ++renderSeq;
+  // Clear the old page at once: without this, the previous page stays
+  // visible while refreshMe() + the new page's fetches are still running
+  // (seen as a stale-render flash when tapping Home from another page).
+  app.innerHTML='';
   setActiveNav(); await refreshMe();
   if (my !== renderSeq) return;
   const hero=document.getElementById('homeHero');
