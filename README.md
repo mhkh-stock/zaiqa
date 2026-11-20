@@ -102,7 +102,9 @@ Burns Road, Lahore, Islamabad + 2 pending, correctly hidden publicly) seed
   owner) are sent by SMTP to the user's own Gmail. The code is never
   returned in an API response once email is configured.
 - **SMTP:** zero-dependency client in `server.js` (`node:tls` to
-  `smtp.gmail.com:465`, AUTH LOGIN). Set `SMTP_USER` (Gmail address) +
+  `smtp.gmail.com:465`, AUTH LOGIN; if port 465 is unreachable it falls back
+  to STARTTLS on 587, and the failure log carries the socket error code,
+  e.g. `socket_error:ECONNREFUSED`). Set `SMTP_USER` (Gmail address) +
   `SMTP_PASS` (16-char Gmail app password) in Railway → service →
   Variables. The app password is never written to any file, log, chat or
   API response. Optional: `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `PUBLIC_URL`.

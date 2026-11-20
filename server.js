@@ -13,6 +13,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const tls = require('node:tls');
+const net = require('node:net');
 const { DatabaseSync } = require('node:sqlite');
 
 const PORT = Number(process.env.PORT || 3011);
@@ -290,46 +291,108 @@ function smtpConfigured() { return SMTP_USER !== '' && SMTP_PASS !== ''; }
 function sendMail(to, subject, text) {
   return new Promise((resolve) => {
     if (!smtpConfigured()) return resolve({ sent: false, reason: 'not_configured' });
-    const sock = tls.connect({ host: SMTP_HOST, port: SMTP_PORT, servername: SMTP_HOST, timeout: 15000 });
-    let buf = '', stage = 0, done = false;
+    let done = false, active = null;
     const finish = (ok, reason) => {
       if (done) return; done = true; clearTimeout(timer);
-      try { sock.destroy(); } catch {}
+      if (active) { try { active.destroy(); } catch {} }
       resolve({ sent: ok, reason });
     };
     const timer = setTimeout(() => finish(false, 'timeout'), 30000);
-    const send = (line) => { try { sock.write(line + '\r\n'); } catch { finish(false, 'write_failed'); } };
-    const body = String(text).split(/\r?\n/).map((l) => (l.startsWith('.') ? '.' + l : l)).join('\r\n');
-    const data = [
-      'From: ' + SMTP_FROM,
-      'To: ' + to,
-      'Subject: ' + String(subject).replace(/[\r\n]/g, ' '),
-      'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=utf-8',
-      '',
-      body,
-    ].join('\r\n');
-    sock.on('error', () => finish(false, 'socket_error'));
-    sock.on('data', (chunk) => {
-      buf += chunk.toString('utf8');
-      if (!buf.includes('\n')) return;
-      const lines = buf.split('\r\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!/^\d{3}[ -]/.test(line)) continue; // wait for a full reply line
-        const code = line.slice(0, 3);
-        if (stage === 0 && code === '220') { stage = 1; send('EHLO zaiqa'); }
-        else if (stage === 1 && code === '250') { stage = 2; send('AUTH LOGIN'); }
-        else if (stage === 2 && code === '334') { stage = 3; send(Buffer.from(SMTP_USER, 'utf8').toString('base64')); }
-        else if (stage === 3 && code === '334') { stage = 4; send(Buffer.from(SMTP_PASS, 'utf8').toString('base64')); }
-        else if (stage === 4 && code === '235') { stage = 5; send('MAIL FROM:<' + SMTP_USER + '>'); }
-        else if (stage === 5 && code === '250') { stage = 6; send('RCPT TO:<' + to + '>'); }
-        else if (stage === 6 && code === '250') { stage = 7; send('DATA'); }
-        else if (stage === 7 && code === '354') { stage = 8; send(data + '\r\n.'); }
-        else if (stage === 8 && code === '250') { stage = 9; send('QUIT'); finish(true, 'sent'); }
-        else if (code[0] === '4' || code[0] === '5') { finish(false, 'smtp_' + code); }
-      }
+    // The EHLO -> QUIT conversation on an already-connected socket.
+    // `label` prefixes socket failures so the log shows which transport
+    // failed and how (e.g. socket_error:ECONNREFUSED). Error codes and
+    // SMTP reply codes never contain credentials.
+    const converse = (sock, label) => new Promise((res) => {
+      active = sock;
+      let buf = '', stage = 0, settled = false;
+      const stop = (ok, reason) => { if (settled) return; settled = true; res({ sent: ok, reason }); };
+      const send = (line) => { try { sock.write(line + '\r\n'); } catch { stop(false, 'write_failed'); } };
+      const body = String(text).split(/\r?\n/).map((l) => (l.startsWith('.') ? '.' + l : l)).join('\r\n');
+      const data = [
+        'From: ' + SMTP_FROM,
+        'To: ' + to,
+        'Subject: ' + String(subject).replace(/[\r\n]/g, ' '),
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        body,
+      ].join('\r\n');
+      sock.on('error', (err) => stop(false, label + ':' + (err && err.code ? err.code : 'unknown')));
+      sock.on('close', () => stop(false, label + ':closed'));
+      sock.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        if (!buf.includes('\n')) return;
+        const lines = buf.split('\r\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!/^\d{3}[ -]/.test(line)) continue; // wait for a full reply line
+          const code = line.slice(0, 3);
+          if (stage === 0 && code === '220') { stage = 1; send('EHLO zaiqa'); }
+          else if (stage === 1 && code === '250') { stage = 2; send('AUTH LOGIN'); }
+          else if (stage === 2 && code === '334') { stage = 3; send(Buffer.from(SMTP_USER, 'utf8').toString('base64')); }
+          else if (stage === 3 && code === '334') { stage = 4; send(Buffer.from(SMTP_PASS, 'utf8').toString('base64')); }
+          else if (stage === 4 && code === '235') { stage = 5; send('MAIL FROM:<' + SMTP_USER + '>'); }
+          else if (stage === 5 && code === '250') { stage = 6; send('RCPT TO:<' + to + '>'); }
+          else if (stage === 6 && code === '250') { stage = 7; send('DATA'); }
+          else if (stage === 7 && code === '354') { stage = 8; send(data + '\r\n.'); }
+          else if (stage === 8 && code === '250') { stage = 9; send('QUIT'); stop(true, 'sent'); }
+          else if (code[0] === '4' || code[0] === '5') { stop(false, 'smtp_' + code); }
+        }
+      });
     });
+    const tryImplicitTLS = async () => {
+      const sock = tls.connect({ host: SMTP_HOST, port: SMTP_PORT, servername: SMTP_HOST });
+      sock.setTimeout(15000);
+      sock.on('timeout', () => { try { sock.destroy(); } catch {} });
+      return converse(sock, 'socket_error');
+    };
+    // Plain TCP on 587, EHLO, STARTTLS, then upgrade the same socket.
+    const tryStartTLS = async () => {
+      const plain = net.connect({ host: SMTP_HOST, port: 587 });
+      plain.setTimeout(15000);
+      plain.on('timeout', () => { try { plain.destroy(); } catch {} });
+      let sawEhlo = false, sawStart = false;
+      const pre = await new Promise((res) => {
+        let b = '', ok = false;
+        const stop = (v) => { if (ok) return; ok = true; res(v); };
+        plain.on('error', (err) => stop({ err: 'starttls_error:' + (err && err.code ? err.code : 'unknown') }));
+        plain.on('close', () => stop({ err: 'starttls_error:closed' }));
+        plain.on('data', (chunk) => {
+          b += chunk.toString('utf8');
+          if (!b.includes('\n')) return;
+          const lines = b.split('\r\n'); b = lines.pop();
+          for (const line of lines) {
+            if (!/^\d{3}[ -]/.test(line)) continue;
+            const code = line.slice(0, 3);
+            if (code === '220' && !sawEhlo) { sawEhlo = true; try { plain.write('EHLO zaiqa\r\n'); } catch { stop({ err: 'starttls_error:write_failed' }); } }
+            else if (code === '250' && sawEhlo && !sawStart) { sawStart = true; try { plain.write('STARTTLS\r\n'); } catch { stop({ err: 'starttls_error:write_failed' }); } }
+            else if (code === '220' && sawStart) { stop({ upgraded: true }); }
+            else if (code[0] === '4' || code[0] === '5') { stop({ err: 'smtp_' + code }); }
+          }
+        });
+      });
+      if (!pre.upgraded) { try { plain.destroy(); } catch {} return { sent: false, reason: pre.err || 'starttls_error:closed' }; }
+      plain.removeAllListeners('data');
+      plain.removeAllListeners('error');
+      plain.removeAllListeners('close');
+      const upgraded = tls.connect({ socket: plain, servername: SMTP_HOST });
+      upgraded.setTimeout(15000);
+      upgraded.on('timeout', () => { try { upgraded.destroy(); } catch {} });
+      return converse(upgraded, 'socket_error');
+    };
+    (async () => {
+      const r1 = await tryImplicitTLS();
+      if (r1.sent) return finish(true, 'sent');
+      // Fall back to 587 only when the 465 socket itself failed (port
+      // unreachable/blocked) — not when the server answered or the
+      // credentials were rejected. Only the default 465 port gets a fallback.
+      if (SMTP_PORT === 465 && r1.reason && r1.reason.startsWith('socket_error')) {
+        const r2 = await tryStartTLS();
+        if (r2.sent) return finish(true, 'sent');
+        return finish(false, r1.reason + ' + 587:' + r2.reason);
+      }
+      return finish(false, r1.reason);
+    })();
   });
 }
 
